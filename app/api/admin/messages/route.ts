@@ -65,8 +65,10 @@ export async function GET(request: Request) {
                 pages: Math.ceil(total / limit)
             }
         }, { status: 200 });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error fetching messages:', error);
-        return NextResponse.json({ message: 'Failed to fetch messages' }, { status: 500 });
+        return NextResponse.json({ 
+            message: 'Internal Server Error'
+        }, { status: 500 });
     }
 }
