@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { MessageCircle, Mail, Lock, AlertCircle, Loader2, EyeOff, Eye, Github, CheckCircle } from 'lucide-react';
+import { MessageCircle, Mail, Lock, AlertCircle, Loader2, EyeOff, Eye, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { setAuthToken, getAuthToken, removeAuthToken } from '@/lib/storage';
@@ -30,7 +30,7 @@ export default function LoginPage() {
         });
 
         if (response.ok) {
-          router.push('/chat');
+          router.push('/admin');
         } else if (response.status === 401 || response.status === 404) {
           removeAuthToken();
         }
@@ -62,8 +62,8 @@ export default function LoginPage() {
       }
 
       setAuthToken(data.token, rememberMe);
-      window.location.href = '/chat'; 
-    } catch (err) {
+      window.location.href = '/admin'; 
+    } catch (_err) {
       setError('Something went wrong. Please try again.');
       setLoading(false);
     }

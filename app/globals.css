@@ -1,26 +1,293 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ============================================
+   PREMIUM DESIGN SYSTEM - ZINC/BLUE AESTHETIC
+   ============================================ */
+
+/* Dark Mode - Deep Dark Premium */
+:root[data-theme="dark"] {
+  /* Core Backgrounds */
+  --background: #09090b;
+  --foreground: #f4f4f5;
+
+  /* Chat App Theme Variables */
+  --bg-primary: #09090b;
+  --bg-secondary: #18181b;
+  --bg-sidebar: #09090b;
+  --bg-hover: #27272a;
+  --bg-selected: #3f3f46;
+
+  /* Glassmorphism */
+  --bg-glass: rgba(9, 9, 11, 0.8);
+  --bg-input: #18181b;
+
+  /* Text Colors */
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+
+  /* Accent - Blue 600 */
+  --accent-color: #2563eb;
+  --accent-secondary: #3b82f6;
+  --accent-hover: #1d4ed8;
+
+  /* Borders */
+  --border-color: #27272a;
+
+  /* Glow Effects */
+  --glow-color: rgba(59, 130, 246, 0.1);
+  --shadow-accent: 0 0 40px -10px rgba(37, 99, 235, 0.5);
+  --shadow-accent-hover: 0 0 60px -15px rgba(37, 99, 235, 0.7);
 }
 
+/* Light Mode - Premium Clean */
+:root[data-theme="light"] {
+  /* Core Backgrounds */
+  --background: #fafafa;
+  --foreground: #09090b;
+
+  /* Chat App Theme Variables */
+  --bg-primary: #fafafa;
+  --bg-secondary: #f4f4f5;
+  --bg-sidebar: #fafafa;
+  --bg-hover: #e4e4e7;
+  --bg-selected: #d4d4d8;
+
+  /* Glassmorphism */
+  --bg-glass: rgba(255, 255, 255, 0.8);
+  --bg-input: #f4f4f5;
+
+  /* Text Colors */
+  --text-primary: #09090b;
+  --text-secondary: #52525b;
+  --text-tertiary: #71717a;
+
+  /* Accent - Blue 600 */
+  --accent-color: #2563eb;
+  --accent-secondary: #3b82f6;
+  --accent-hover: #1d4ed8;
+
+  /* Borders */
+  --border-color: #e4e4e7;
+
+  /* Glow Effects - Subtler for light mode */
+  --glow-color: rgba(59, 130, 246, 0.05);
+  --shadow-accent: 0 0 40px -10px rgba(37, 99, 235, 0.3);
+  --shadow-accent-hover: 0 0 60px -15px rgba(37, 99, 235, 0.5);
+}
+
+/* Default to dark theme */
+:root {
+  --background: #09090b;
+  --foreground: #f4f4f5;
+
+  --bg-primary: #09090b;
+  --bg-secondary: #18181b;
+  --bg-sidebar: #09090b;
+  --bg-hover: #27272a;
+  --bg-selected: #3f3f46;
+
+  --bg-glass: rgba(9, 9, 11, 0.8);
+  --bg-input: #18181b;
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+
+  --accent-color: #2563eb;
+  --accent-secondary: #3b82f6;
+  --accent-hover: #1d4ed8;
+
+  --border-color: #27272a;
+
+  --glow-color: rgba(59, 130, 246, 0.1);
+  --shadow-accent: 0 0 40px -10px rgba(37, 99, 235, 0.5);
+  --shadow-accent-hover: 0 0 60px -15px rgba(37, 99, 235, 0.7);
+}
+
+/* ============================================
+   TAILWIND THEME MAPPINGS
+   ============================================ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Chat App Theme Mappings */
+  --color-chat-bg-primary: var(--bg-primary);
+  --color-chat-bg-secondary: var(--bg-secondary);
+  --color-chat-sidebar: var(--bg-sidebar);
+  --color-chat-hover: var(--bg-hover);
+  --color-chat-selected: var(--bg-selected);
+  --color-chat-glass: var(--bg-glass);
+  --color-chat-input: var(--bg-input);
+
+  --color-chat-text-primary: var(--text-primary);
+  --color-chat-text-secondary: var(--text-secondary);
+  --color-chat-text-tertiary: var(--text-tertiary);
+
+  --color-chat-accent: var(--accent-color);
+  --color-chat-accent-secondary: var(--accent-secondary);
+  --color-chat-accent-hover: var(--accent-hover);
+
+  --color-chat-border: var(--border-color);
+  --color-chat-glow: var(--glow-color);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+/* ============================================
+   BASE STYLES
+   ============================================ */
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  /* Prevent elastic bounce scroll on iOS */
+  overscroll-behavior: none;
+  /* Remove tap highlight on mobile */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Mobile viewport fix: use dvh when supported */
+.h-screen-safe {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Safe area utilities for notched phones */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Prevent iOS zoom on input focus */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea {
+  font-size: max(16px, 1em);
+}
+
+/* ============================================
+   CUSTOM SCROLLBAR
+   ============================================ */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 0px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #dbdbdb;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Dark mode scrollbar */
+:root[data-theme="dark"] .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #262626;
+}
+
+:root[data-theme="dark"] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #363636;
+}
+
+/* Light mode scrollbar */
+:root[data-theme="light"] .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+}
+
+:root[data-theme="light"] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.2s ease-out;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ============================================
+   SIGNATURE AMBIENT GLOW COMPONENT
+   ============================================ */
+.ambient-glow {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 0;
+}
+
+.ambient-glow-inner {
+  height: 40rem;
+  width: 100%;
+  max-width: 60rem;
+  background: var(--glow-color);
+  filter: blur(120px);
+  border-radius: 9999px;
+  transform: translateY(-20%);
+}
+
+/* Hide scrollbar utility */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
