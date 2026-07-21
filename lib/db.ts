@@ -7,6 +7,7 @@ import "@/models/Report";
 import "@/models/AuditLog";
 import "@/models/Announcement";
 import "@/models/AdminSetting";
+import "@/models/BotChat";
 
 const MONGODB_URI = process.env.MONGODB_URI as string;
 const DB_NAME = process.env.DB_NAME || "chat-app"; 
