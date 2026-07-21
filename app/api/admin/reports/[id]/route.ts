@@ -1,39 +1,35 @@
-import { NextResponse } from 'next/server';
-import { connectDB } from '@/lib/db';
-import Report from '@/models/Report';
-import { verifyToken } from '@/lib/auth';
+import { withAdmin } from "@/lib/withAdmin";
+import { ok, fail } from "@/lib/api";
+import Report from "@/models/Report";
 
-export async function PATCH(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    await connectDB();
-    const auth = await verifyToken(request);
-    
-    if (!auth || auth.role !== 'admin') {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+type RouteCtx = { params: Promise<{ id: string }> };
+
+/** Resolve or dismiss a report and optionally attach admin notes. */
+export const PATCH = withAdmin<RouteCtx>("reports.resolve", async (req, { audit }, { params }) => {
+  const { id } = await params;
+  const body = await req.json().catch(() => ({}));
+
+  const update: Record<string, unknown> = {};
+  if (body.status !== undefined) {
+    if (!["pending", "resolved", "dismissed"].includes(body.status)) {
+      return fail("Invalid status", 400);
     }
-
-    const { status, adminNotes } = await request.json();
-    const { id } = await params;
-
-    const report = await Report.findByIdAndUpdate(
-      id,
-      { 
-        ...(status && { status }),
-        ...(adminNotes !== undefined && { adminNotes }),
-      },
-      { new: true }
-    );
-
-    if (!report) {
-      return NextResponse.json({ message: 'Report not found' }, { status: 404 });
-    }
-
-    return NextResponse.json(report);
-  } catch (error: any) {
-    console.error('Error updating report:', error);
-    return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
+    update.status = body.status;
   }
-}
+  if (body.adminNotes !== undefined) {
+    update.adminNotes = String(body.adminNotes).slice(0, 1000);
+  }
+  if (Object.keys(update).length === 0) return fail("Nothing to update", 400);
+
+  const report = await Report.findByIdAndUpdate(id, update, { new: true }).lean();
+  if (!report) return fail("Report not found", 404);
+
+  await audit({
+    action: `report.${update.status ?? "update"}`,
+    targetType: "report",
+    targetId: id,
+    metadata: { status: update.status },
+  });
+
+  return ok({ report });
+});

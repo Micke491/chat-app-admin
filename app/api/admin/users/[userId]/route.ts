@@ -1,52 +1,48 @@
-import { NextResponse } from 'next/server';
-import { connectDB } from '@/lib/db';
-import User from '@/models/User';
-import { verifyToken } from '@/lib/auth';
+import { withAdmin } from "@/lib/withAdmin";
+import { ok, fail } from "@/lib/api";
+import User from "@/models/User";
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ userId: string }> }) {
-    try {
-        await connectDB();
-        const auth = await verifyToken(request);
-        if (!auth || auth.role !== 'admin') {
-            return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
-        }
+type RouteCtx = { params: Promise<{ userId: string }> };
 
-        const resolvedParams = await params;
-        const targetUserId = resolvedParams.userId;
+/** Change a user's platform role and/or admin tier. Super admin only. */
+export const PATCH = withAdmin<RouteCtx>("users.role", async (req, { auth, audit }, { params }) => {
+  const { userId } = await params;
+  if (auth.id === userId) {
+    return fail("You cannot change your own role", 400);
+  }
 
-        if (auth.id === targetUserId) {
-            return NextResponse.json({ message: 'Cannot modify your own admin status or ban yourself' }, { status: 400 });
-        }
+  const body = await req.json().catch(() => ({}));
+  const update: Record<string, unknown> = {};
 
-        const body = await request.json();
-        
-        const updateData: any = {};
-        if (body.role !== undefined && ['user', 'admin'].includes(body.role)) {
-            updateData.role = body.role;
-        }
-        if (body.isBanned !== undefined) {
-            updateData.isBanned = Boolean(body.isBanned);
-        }
-
-        if (Object.keys(updateData).length === 0) {
-            return NextResponse.json({ message: 'No valid data provided' }, { status: 400 });
-        }
-
-        const updatedUser = await User.findByIdAndUpdate(
-            targetUserId, 
-            { $set: updateData },
-            { new: true }
-        ).select('-password -twoFactorSecret -resetPasswordToken');
-
-        if (!updatedUser) {
-            return NextResponse.json({ message: 'User not found' }, { status: 404 });
-        }
-
-        console.log(`[AUDIT] Admin ${auth.id} (${auth.email}) updated user ${targetUserId}: ${JSON.stringify(updateData)} at ${new Date().toISOString()}`);
-
-        return NextResponse.json({ user: updatedUser, message: 'User updated successfully' }, { status: 200 });
-    } catch (error) {
-        console.error('Error updating user:', error);
-        return NextResponse.json({ message: 'Failed to update user' }, { status: 500 });
+  if (body.role !== undefined) {
+    if (!["user", "admin"].includes(body.role)) return fail("Invalid role", 400);
+    update.role = body.role;
+    // Demoting to a normal user clears any admin tier.
+    if (body.role === "user") update.adminRole = undefined;
+  }
+  if (body.adminRole !== undefined) {
+    if (body.adminRole !== null && !["superadmin", "moderator"].includes(body.adminRole)) {
+      return fail("Invalid admin role", 400);
     }
-}
+    update.adminRole = body.adminRole ?? undefined;
+  }
+
+  if (Object.keys(update).length === 0) return fail("No valid fields to update", 400);
+
+  const target = await User.findById(userId).lean();
+  if (!target) return fail("User not found", 404);
+
+  const updated = await User.findByIdAndUpdate(userId, { $set: update }, { new: true })
+    .select("-password -twoFactorSecret -resetPasswordToken")
+    .lean();
+
+  await audit({
+    action: "user.role",
+    targetType: "user",
+    targetId: userId,
+    targetLabel: `@${target.username}`,
+    metadata: { before: { role: target.role, adminRole: target.adminRole }, after: update },
+  });
+
+  return ok({ user: updated });
+});

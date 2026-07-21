@@ -1,74 +1,50 @@
-import { NextResponse } from 'next/server';
-import { connectDB } from '@/lib/db';
-import Message from '@/models/Message';
-import User from '@/models/User';
-import Chat from '@/models/Chat';
-import { verifyToken } from '@/lib/auth';
+import { withAdmin } from "@/lib/withAdmin";
+import { okPaginated, parsePagination, buildPagination, escapeRegex } from "@/lib/api";
+import Message from "@/models/Message";
+import User from "@/models/User";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
-    try {
-        await connectDB();
-        const auth = await verifyToken(request);
-        if (!auth || auth.role !== 'admin') {
-            return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
-        }
+export const GET = withAdmin("messages.view", async (req) => {
+  const url = new URL(req.url);
+  const { page, limit, skip } = parsePagination(url, { defaultLimit: 40, maxLimit: 100 });
+  const search = url.searchParams.get("search")?.trim() || "";
+  const filter = url.searchParams.get("filter") || ""; // removed|media|all
 
-        const url = new URL(request.url);
-        const search = url.searchParams.get('search') || '';
-        const page = parseInt(url.searchParams.get('page') || '1');
-        const limit = parseInt(url.searchParams.get('limit') || '50');
+  const query: Record<string, unknown> = {};
 
-        const query: any = {};
-        if (search.startsWith('@') && search.length > 1) {
-            const term = search.slice(1);
-            const matchingUsers = await User.find({
-                $or: [
-                    { username: { $regex: term, $options: 'i' } },
-                    { email: { $regex: term, $options: 'i' } },
-                ],
-            }).select('_id').lean();
+  if (search.startsWith("@") && search.length > 1) {
+    const term = escapeRegex(search.slice(1));
+    const matching = await User.find({
+      $or: [{ username: { $regex: term, $options: "i" } }, { email: { $regex: term, $options: "i" } }],
+    })
+      .select("_id")
+      .lean();
+    const ids = matching.map((u) => u._id);
+    query.$or = [
+      ...(ids.length ? [{ sender: { $in: ids } }] : []),
+      { senderUsername: { $regex: term, $options: "i" } },
+    ];
+  } else if (search) {
+    query.text = { $regex: escapeRegex(search), $options: "i" };
+  }
 
-            const userIds = matchingUsers.map(u => u._id);
+  if (filter === "removed") {
+    query.$or = [{ removedByAdmin: true }, { isDeletedForEveryone: true }];
+  } else if (filter === "media") {
+    query.mediaUrl = { $exists: true, $ne: null };
+  }
 
-            query.$or = [
-                ...(userIds.length > 0 ? [{ sender: { $in: userIds } }] : []),
-                { senderUsername: { $regex: term, $options: 'i' } },
-            ];
-        } else if (search) {
-            query.text = { $regex: search, $options: 'i' };
-        }
+  const [messages, total] = await Promise.all([
+    Message.find(query)
+      .populate("sender", "username email avatar")
+      .populate("chatId", "isGroupChat name")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Message.countDocuments(query),
+  ]);
 
-        const total = await Message.countDocuments(query);
-        const messages = await Message.find(query)
-            .populate('sender', 'username email avatar')
-            .populate('chatId', 'isGroupChat name')
-            .sort({ createdAt: -1 })
-            .skip((page - 1) * limit)
-            .limit(limit)
-            .lean();
-
-        const totalMessages = await Message.countDocuments();
-        const totalDeletedMessages = await Message.countDocuments({ isDeletedForEveryone: true });
-
-        return NextResponse.json({
-            messages,
-            stats: {
-                total: totalMessages,
-                deleted: totalDeletedMessages
-            },
-            pagination: {
-                page,
-                limit,
-                total,
-                pages: Math.ceil(total / limit)
-            }
-        }, { status: 200 });
-    } catch (error: any) {
-        console.error('Error fetching messages:', error);
-        return NextResponse.json({ 
-            message: 'Internal Server Error'
-        }, { status: 500 });
-    }
-}
+  return okPaginated(messages, buildPagination(page, limit, total));
+});
