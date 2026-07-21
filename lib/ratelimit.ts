@@ -27,6 +27,14 @@ export const generalLimiter = new Ratelimit({
   prefix: "@upstash/ratelimit/general",
 });
 
+// Admin console fires several requests per page view; allow a generous budget.
+export const adminLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(300, "1 m"),
+  analytics: true,
+  prefix: "@upstash/ratelimit/admin",
+});
+
 export function getIP(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0].trim();

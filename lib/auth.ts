@@ -1,4 +1,8 @@
 import jwt, { JwtPayload } from "jsonwebtoken";
+import { connectDB } from "./db";
+import User from "@/models/User";
+import { resolveAdminRole } from "./permissions";
+import type { AdminRole } from "@/models/User";
 
 interface DecodedToken extends JwtPayload {
   userId?: string;
@@ -9,28 +13,33 @@ interface DecodedToken extends JwtPayload {
 
 export interface AuthUser {
   id: string;
+  username: string;
   email?: string;
-  role: 'user' | 'admin';
+  role: "user" | "admin";
+  /** Effective admin tier: 'superadmin' | 'moderator' | null (not an admin). */
+  adminRole: AdminRole | null;
   isBanned: boolean;
   timeoutUntil?: Date;
 }
 
-import { connectDB } from "./db";
-import User from "@/models/User";
+function extractToken(req: Request): string {
+  const authHeader = req.headers.get("authorization") || "";
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.split(" ")[1];
+  }
+  const cookieHeader = req.headers.get("cookie") || "";
+  const match = cookieHeader.match(/(?:^|; )token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
 
+/**
+ * Verify a request's JWT and load the associated user. Returns null when the
+ * token is missing/invalid, or when the account is banned, deactivated, or
+ * currently timed out.
+ */
 export async function verifyToken(req: Request): Promise<AuthUser | null> {
   try {
-    const authHeader = req.headers.get("authorization") || "";
-    let token = "";
-
-    if (authHeader.startsWith("Bearer ")) {
-      token = authHeader.split(" ")[1];
-    } else {
-      const cookieHeader = req.headers.get("cookie") || "";
-      const match = cookieHeader.match(/(?:^|; )token=([^;]+)/);
-      if (match) token = decodeURIComponent(match[1]);
-    }
-
+    const token = extractToken(req);
     if (!token) return null;
 
     const secret = process.env.JWT_SECRET;
@@ -40,31 +49,27 @@ export async function verifyToken(req: Request): Promise<AuthUser | null> {
     }
 
     const decoded = jwt.verify(token, secret) as DecodedToken;
-    
     const id = decoded.userId || decoded.id || decoded._id;
-
     if (!id) return null;
 
     await connectDB();
-    const user = await User.findById(id).lean();
+    const user = await User.findById(id)
+      .select("username email role adminRole isBanned isDeactivated timeoutUntil")
+      .lean();
 
-    if (!user || user.isBanned) {
-      return null;
-    }
+    if (!user || user.isBanned || user.isDeactivated) return null;
+    if (user.timeoutUntil && new Date(user.timeoutUntil) > new Date()) return null;
 
-    if (user.timeoutUntil && new Date(user.timeoutUntil) > new Date()) {
-      return null;
-    }
-
-    return { 
-      id, 
-      email: decoded.email,
-      role: user.role || 'user',
+    return {
+      id,
+      username: user.username,
+      email: user.email ?? decoded.email,
+      role: user.role || "user",
+      adminRole: resolveAdminRole(user.role, user.adminRole),
       isBanned: user.isBanned || false,
-      timeoutUntil: user.timeoutUntil
+      timeoutUntil: user.timeoutUntil,
     };
-    
-  } catch (err) {
+  } catch {
     return null;
   }
 }

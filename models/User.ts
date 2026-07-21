@@ -1,5 +1,7 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
+export type AdminRole = "superadmin" | "moderator";
+
 export interface IUser extends Document {
   username: string;
   email: string;
@@ -10,11 +12,22 @@ export interface IUser extends Document {
   publicKey?: string;
   readReceipts: boolean;
   blockedUsers: mongoose.Types.ObjectId[];
+  pinnedChats: mongoose.Types.ObjectId[];
   twoFactorEnabled: boolean;
   twoFactorSecret?: string;
-  theme: 'light' | 'dark' | 'system';
-  role: 'user' | 'admin';
+  theme: "light" | "dark" | "system";
+  role: "user" | "admin";
+  /** Granular admin tier. Only meaningful when role === 'admin'. */
+  adminRole?: AdminRole;
   isBanned: boolean;
+  /** Reversible admin deactivation (distinct from ban/timeout). */
+  isDeactivated: boolean;
+  deactivatedBy?: mongoose.Types.ObjectId;
+  deactivatedAt?: Date;
+  deactivationReason?: string;
+  isEmailVerified: boolean;
+  gender?: string;
+  botPersona?: string;
   mutedChats: {
     chatId: mongoose.Types.ObjectId;
     mutedUntil: Date;
@@ -80,6 +93,10 @@ const UserSchema = new Schema<IUser>(
       type: [Schema.Types.ObjectId],
       default: [],
     },
+    pinnedChats: {
+      type: [Schema.Types.ObjectId],
+      default: [],
+    },
     twoFactorEnabled: {
       type: Boolean,
       default: false,
@@ -90,17 +107,52 @@ const UserSchema = new Schema<IUser>(
     },
     theme: {
       type: String,
-      enum: ['light', 'dark', 'system'],
-      default: 'dark',
+      enum: ["light", "dark", "system"],
+      default: "dark",
     },
     role: {
       type: String,
-      enum: ['user', 'admin'],
-      default: 'user',
+      enum: ["user", "admin"],
+      default: "user",
+    },
+    adminRole: {
+      type: String,
+      enum: ["superadmin", "moderator"],
+      default: undefined,
     },
     isBanned: {
       type: Boolean,
       default: false,
+    },
+    isDeactivated: {
+      type: Boolean,
+      default: false,
+    },
+    deactivatedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: undefined,
+    },
+    deactivatedAt: {
+      type: Date,
+      default: undefined,
+    },
+    deactivationReason: {
+      type: String,
+      maxlength: [500, "Reason cannot exceed 500 characters"],
+      default: undefined,
+    },
+    isEmailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    gender: {
+      type: String,
+      default: "",
+    },
+    botPersona: {
+      type: String,
+      default: "",
     },
     mutedChats: {
       type: [
@@ -152,7 +204,6 @@ const UserSchema = new Schema<IUser>(
     timestamps: true,
   }
 );
-
 
 const User: Model<IUser> =
   mongoose.models.User || mongoose.model<IUser>("User", UserSchema);
