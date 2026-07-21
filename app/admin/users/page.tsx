@@ -1,9 +1,40 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useCallback } from 'react';
-import { getAuthToken } from "@/lib/storage";
-import { Search, Ban, ShieldCheck, User, RefreshCw, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown, MoreHorizontal, ShieldAlert, XCircle, Clock, Trash2, AlertTriangle } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useMemo, useState } from "react";
+import {
+  Ban,
+  ShieldCheck,
+  Clock,
+  XCircle,
+  Trash2,
+  UserX,
+  UserCheck,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  BadgeCheck,
+  Users as UsersIcon,
+} from "lucide-react";
+import { apiFetch } from "@/lib/client/api";
+import { useList } from "@/lib/client/useList";
+import { useDebounce } from "@/lib/client/hooks";
+import { useToast } from "@/components/admin/Toast";
+import { useAdmin } from "@/components/admin/AdminProvider";
+import { Modal, ConfirmDialog } from "@/components/admin/Modal";
+import {
+  PageHeader,
+  SearchBar,
+  FilterSelect,
+  Button,
+  IconButton,
+  Badge,
+  Avatar,
+  Spinner,
+  EmptyState,
+  ErrorState,
+  Pagination,
+} from "@/components/admin/ui";
+import { formatDate, isTimedOut } from "@/lib/format";
 
 interface UserRow {
   _id: string;
@@ -11,632 +42,417 @@ interface UserRow {
   email: string;
   name?: string;
   avatar?: string;
-  role: 'user' | 'admin';
+  role: "user" | "admin";
+  adminRole?: "superadmin" | "moderator" | null;
   isBanned: boolean;
+  isDeactivated: boolean;
+  isEmailVerified?: boolean;
   timeoutUntil?: string;
   createdAt: string;
-  lastSeen?: string;
-  isOnline: boolean;
+  isOnline?: boolean;
 }
 
-type SortField = 'username' | 'createdAt' | 'isBanned';
-type SortOrder = 'asc' | 'desc';
+type SortField = "username" | "createdAt" | "isBanned";
 
-function Avatar({ user, className = "w-8 h-8" }: { user: UserRow; className?: string }) {
-  const initials = (user.name || user.username).slice(0, 2).toUpperCase();
-  if (user.avatar) {
-    return <img src={user.avatar} alt={user.username} className={`${className} rounded-full object-cover border border-chat-border`} />;
-  }
-  const colors = ['bg-blue-500', 'bg-purple-500', 'bg-emerald-500', 'bg-amber-500', 'bg-pink-500'];
-  const colorClass = colors[user.username.charCodeAt(0) % colors.length];
-  
-  return (
-    <div className={`${className} rounded-full ${colorClass}/20 border border-${colorClass}/40 flex items-center justify-center text-[10px] font-bold text-chat-text-primary shrink-0`}>
-      {initials}
-    </div>
-  );
-}
+export default function UsersPage() {
+  const { can } = useAdmin();
+  const toast = useToast();
 
-function SortIcon({ field, sortBy, sortOrder }: { field: SortField; sortBy: SortField; sortOrder: SortOrder }) {
-  if (sortBy !== field) return <ArrowUpDown size={12} className="text-chat-text-tertiary ml-1" />;
-  return sortOrder === 'asc'
-    ? <ArrowUp size={12} className="text-chat-accent ml-1" />
-    : <ArrowDown size={12} className="text-chat-accent ml-1" />;
-}
-
-export default function AdminUsersPage() {
-  const [users, setUsers] = useState<UserRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [roleFilter, setRoleFilter] = useState('');
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounce(searchInput);
+  const [role, setRole] = useState("");
+  const [status, setStatus] = useState("");
+  const [sortBy, setSortBy] = useState<SortField>("createdAt");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortField>('createdAt');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
-  const [timingOutUser, setTimingOutUser] = useState<UserRow | null>(null);
-  const [customTimeout, setCustomTimeout] = useState('');
-  const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  function getToken() {
-    return document.cookie.match(/(?:^|; )token=([^;]+)/)?.[1] || getAuthToken() || '';
-  }
+  const [timeoutUser, setTimeoutUser] = useState<UserRow | null>(null);
+  const [customTimeout, setCustomTimeout] = useState("");
+  const [deleteUser, setDeleteUser] = useState<UserRow | null>(null);
+  const [deactivateUser, setDeactivateUser] = useState<UserRow | null>(null);
+  const [reason, setReason] = useState("");
 
-  function handleSort(field: SortField) {
-    if (sortBy === field) {
-      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
-    } else {
+  const path = useMemo(() => {
+    const p = new URLSearchParams({
+      page: String(page),
+      limit: "20",
+      sortBy,
+      sortOrder,
+    });
+    if (search) p.set("search", search);
+    if (role) p.set("role", role);
+    if (status) p.set("status", status);
+    return `/api/admin/users?${p.toString()}`;
+  }, [page, sortBy, sortOrder, search, role, status]);
+
+  const { items: users, pagination, loading, error, reload } = useList<UserRow>(path);
+
+  function toggleSort(field: SortField) {
+    if (sortBy === field) setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+    else {
       setSortBy(field);
-      setSortOrder(field === 'username' ? 'asc' : 'desc');
+      setSortOrder(field === "username" ? "asc" : "desc");
     }
     setPage(1);
   }
 
-  const fetchUsers = useCallback(async () => {
-    setLoading(true);
+  async function moderate(user: UserRow, body: Record<string, unknown>, ok: string) {
+    setBusy(user._id);
     try {
-      const params = new URLSearchParams({
-        page: String(page), limit: '20', search, sortBy, sortOrder,
-        ...(roleFilter ? { role: roleFilter } : {}),
+      await apiFetch(`/api/admin/users/${user._id}/moderation`, {
+        method: "POST",
+        body: JSON.stringify(body),
       });
-      const res = await fetch(`/api/admin/users?${params}`, { headers: { Authorization: `Bearer ${getToken()}` } });
-      const data = await res.json();
-      setUsers(data.users || []);
-      setTotalPages(data.pagination?.pages || 1);
-      setTotalCount(data.pagination?.total || 0);
-    } catch { } finally {
-      setLoading(false);
-    }
-  }, [page, search, roleFilter, sortBy, sortOrder]);
-
-  useEffect(() => { fetchUsers(); }, [fetchUsers]);
-
-  async function toggleBan(userId: string, currentBanned: boolean) {
-    setActionLoading(userId + '_ban');
-    try {
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ isBanned: !currentBanned }),
-      });
-      if (res.ok) {
-        setUsers(prev => prev.map(u => u._id === userId ? { ...u, isBanned: !currentBanned } : u));
-      }
-    } catch { } finally {
-      setActionLoading(null);
+      toast.success(ok);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusy(null);
     }
   }
 
-  async function toggleRole(userId: string, currentRole: 'user' | 'admin') {
-    setActionLoading(userId + '_role');
+  async function changeRole(user: UserRow) {
+    setBusy(user._id);
     try {
-      const newRole = currentRole === 'admin' ? 'user' : 'admin';
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ role: newRole }),
+      const makeAdmin = user.role !== "admin";
+      await apiFetch(`/api/admin/users/${user._id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          role: makeAdmin ? "admin" : "user",
+          adminRole: makeAdmin ? "moderator" : null,
+        }),
       });
-      if (res.ok) {
-        setUsers(prev => prev.map(u => u._id === userId ? { ...u, role: newRole } : u));
-      }
-    } catch { } finally {
-      setActionLoading(null);
+      toast.success(makeAdmin ? "Promoted to admin" : "Demoted to user");
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusy(null);
     }
   }
 
-  async function clearTimeout(userId: string) {
-    setActionLoading(userId + '_timeout');
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/moderation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ action: 'timeout', timeoutUntil: null }),
-      });
-      if (res.ok) {
-        setUsers(prev => prev.map(u => u._id === userId ? { ...u, timeoutUntil: undefined } : u));
-      }
-    } catch { } finally {
-      setActionLoading(null);
-    }
+  const statusOptions = [
+    { label: "All Statuses", value: "" },
+    { label: "Active", value: "active" },
+    { label: "Banned", value: "banned" },
+    { label: "Deactivated", value: "deactivated" },
+    { label: "Timed Out", value: "timedout" },
+  ];
+
+  const SortIcon = ({ field }: { field: SortField }) => {
+    if (sortBy !== field) return <ArrowUpDown size={12} className="text-chat-text-tertiary ml-1" />;
+    return sortOrder === "asc" ? (
+      <ArrowUp size={12} className="text-chat-accent ml-1" />
+    ) : (
+      <ArrowDown size={12} className="text-chat-accent ml-1" />
+    );
+  };
+
+  function StatusBadges({ user }: { user: UserRow }) {
+    return (
+      <div className="flex flex-wrap items-center gap-1 justify-center">
+        {user.isBanned ? (
+          <Badge tone="danger">Banned</Badge>
+        ) : user.isDeactivated ? (
+          <Badge tone="warning">Deactivated</Badge>
+        ) : (
+          <Badge tone="neutral">Active</Badge>
+        )}
+        {isTimedOut(user.timeoutUntil) && <Badge tone="warning">Timed out</Badge>}
+      </div>
+    );
   }
 
-  async function applyTimeout(userId: string, date: string | null) {
-    setActionLoading(userId + '_timeout');
-    try {
-      const isoDate = date ? new Date(date).toISOString() : null;
-      const res = await fetch(`/api/admin/users/${userId}/moderation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ action: 'timeout', timeoutUntil: isoDate }),
-      });
-      if (res.ok) {
-        setUsers(prev => prev.map(u => u._id === userId ? { ...u, timeoutUntil: isoDate || undefined } : u));
-        setTimingOutUser(null);
-        setCustomTimeout('');
-      }
-    } catch { } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function deleteUser(userId: string) {
-    setActionLoading(userId + '_delete');
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/moderation`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${getToken()}` 
-        },
-        body: JSON.stringify({ action: 'delete' }),
-      });
-      if (res.ok) {
-        setUsers(prev => prev.filter(u => u._id !== userId));
-        setTotalCount(prev => prev - 1);
-        setDeletingUser(null);
-      }
-    } catch { } finally {
-      setActionLoading(null);
-    }
+  function Actions({ user }: { user: UserRow }) {
+    const b = busy === user._id;
+    return (
+      <div className="flex items-center gap-0.5 justify-center">
+        {can("users.moderate") && (
+          <>
+            {isTimedOut(user.timeoutUntil) && (
+              <IconButton
+                icon={XCircle}
+                tone="warning"
+                title="Clear timeout"
+                disabled={b}
+                onClick={() => moderate(user, { action: "clear_timeout" }, "Timeout cleared")}
+              />
+            )}
+            <IconButton icon={Clock} tone="warning" title="Timeout" disabled={b} onClick={() => setTimeoutUser(user)} />
+            <IconButton
+              icon={Ban}
+              tone={user.isBanned ? "success" : "danger"}
+              title={user.isBanned ? "Unban" : "Ban"}
+              disabled={b}
+              onClick={() =>
+                moderate(
+                  user,
+                  { action: user.isBanned ? "unban" : "ban" },
+                  user.isBanned ? "User unbanned" : "User banned"
+                )
+              }
+            />
+            <IconButton
+              icon={user.isDeactivated ? UserCheck : UserX}
+              tone={user.isDeactivated ? "success" : "warning"}
+              title={user.isDeactivated ? "Reactivate" : "Deactivate"}
+              disabled={b}
+              onClick={() =>
+                user.isDeactivated
+                  ? moderate(user, { action: "reactivate" }, "User reactivated")
+                  : setDeactivateUser(user)
+              }
+            />
+          </>
+        )}
+        {can("users.role") && (
+          <IconButton
+            icon={ShieldCheck}
+            tone="purple"
+            title={user.role === "admin" ? "Demote to user" : "Make admin"}
+            disabled={b}
+            onClick={() => changeRole(user)}
+          />
+        )}
+        {can("users.delete") && (
+          <IconButton icon={Trash2} tone="danger" title="Delete permanently" disabled={b} onClick={() => setDeleteUser(user)} />
+        )}
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-chat-bg-primary relative">
-      {/* Background Ambient Glow */}
       <div className="ambient-glow">
-        <div className="ambient-glow-inner"></div>
+        <div className="ambient-glow-inner" />
       </div>
 
       <div className="relative z-10 flex flex-col h-full">
-      {/* Header & Controls */}
-      <div className="p-4 sm:p-6 lg:p-8 pb-4 shrink-0">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <h1 className="text-chat-text-primary text-2xl font-bold tracking-tight">Users</h1>
-            <p className="text-chat-text-secondary text-sm mt-1">Manage accounts, roles, and security status</p>
-          </div>
-          <button 
-            onClick={fetchUsers}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-chat-bg-secondary border border-chat-border rounded-lg text-chat-text-secondary text-sm hover:text-chat-text-primary hover:bg-chat-bg-hover transition-all self-start sm:self-auto"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-
-        {/* Search & Filter Bar */}
-        <div className="flex flex-col md:flex-row gap-3">
-          <div className="relative flex-1 group">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-chat-text-tertiary group-focus-within:text-chat-accent transition-colors" />
-            <input
-              value={search}
-              onChange={e => { setSearch(e.target.value); setPage(1); }}
-              placeholder="Search by username or email…"
-              className="w-full bg-chat-bg-secondary border border-chat-border rounded-xl py-2.5 pl-10 pr-4 text-sm text-chat-text-primary placeholder:text-chat-text-tertiary focus:outline-none focus:ring-2 focus:ring-chat-accent/20 focus:border-chat-accent transition-all"
-            />
-          </div>
-          <div className="flex gap-2">
-            <select
-              value={roleFilter}
-              onChange={e => { setRoleFilter(e.target.value); setPage(1); }}
-              className="bg-chat-bg-secondary border border-chat-border rounded-xl px-4 py-2.5 text-sm text-chat-text-primary focus:outline-none focus:border-chat-accent cursor-pointer min-w-[120px]"
-            >
-              <option value="">All Roles</option>
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
-            <div className="flex items-center gap-1 bg-chat-bg-secondary border border-chat-border rounded-xl px-2 text-[10px] font-bold text-chat-text-tertiary uppercase tracking-wider">
-              {totalCount} Total
+        <div className="p-4 sm:p-6 lg:p-8 pb-4 shrink-0 space-y-6">
+          <PageHeader
+            title="Users"
+            subtitle="Manage accounts, roles, and moderation status"
+            actions={<Button icon={UsersIcon} onClick={reload} loading={loading}>Refresh</Button>}
+          />
+          <div className="flex flex-col md:flex-row gap-3">
+            <SearchBar value={searchInput} onChange={(v) => { setSearchInput(v); setPage(1); }} placeholder="Search by username, name, or email…" />
+            <div className="flex gap-2 flex-wrap">
+              <FilterSelect
+                value={role}
+                onChange={(v) => { setRole(v); setPage(1); }}
+                options={[
+                  { label: "All Roles", value: "" },
+                  { label: "User", value: "user" },
+                  { label: "Admin", value: "admin" },
+                ]}
+              />
+              <FilterSelect value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={statusOptions} />
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 custom-scrollbar pb-8">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center pt-20 gap-4">
-            <div className="w-10 h-10 rounded-full border-2 border-chat-border border-t-chat-accent animate-spin" />
-            <p className="text-sm text-chat-text-tertiary font-medium">Loading platform users...</p>
-          </div>
-        ) : users.length === 0 ? (
-          <div className="flex flex-col items-center justify-center pt-20 text-center">
-            <div className="w-16 h-16 rounded-full bg-chat-bg-secondary flex items-center justify-center mb-4 border border-chat-border">
-              <User size={32} className="text-chat-text-tertiary" />
-            </div>
-            <h3 className="text-chat-text-primary font-semibold">No users found</h3>
-            <p className="text-chat-text-tertiary text-sm mt-1 max-w-[240px]">Try adjusting your search query or role filter.</p>
-          </div>
-        ) : (
-          <>
-            {/* Desktop Table View */}
-            <div className="hidden lg:block w-full">
-              <div className="grid grid-cols-[2fr_2fr_1fr_1fr_1fr_120px] gap-4 px-4 py-3 border-b border-chat-border bg-chat-bg-secondary/30 rounded-t-xl sticky top-0 z-10 backdrop-blur-md items-center">
-                <button onClick={() => handleSort('username')} className="flex items-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary transition-colors">
-                  User <SortIcon field="username" sortBy={sortBy} sortOrder={sortOrder} />
-                </button>
-                <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider">Email Address</div>
-                <button onClick={() => handleSort('createdAt')} className="flex items-center justify-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary transition-colors">
-                  Joined <SortIcon field="createdAt" sortBy={sortBy} sortOrder={sortOrder} />
-                </button>
-                <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider text-center">Role</div>
-                <button onClick={() => handleSort('isBanned')} className="flex items-center justify-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary transition-colors">
-                  Status <SortIcon field="isBanned" sortBy={sortBy} sortOrder={sortOrder} />
-                </button>
-                <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider text-center">Actions</div>
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 custom-scrollbar pb-8">
+          {loading ? (
+            <Spinner label="Loading users…" />
+          ) : error ? (
+            <ErrorState message={error} onRetry={reload} />
+          ) : users.length === 0 ? (
+            <EmptyState icon={UsersIcon} title="No users found" description="Try adjusting your search or filters." />
+          ) : (
+            <>
+              {/* Desktop table */}
+              <div className="hidden lg:block">
+                <div className="grid grid-cols-[2fr_2fr_1fr_1fr_1.2fr_1.4fr] gap-4 px-4 py-3 border-b border-chat-border bg-chat-bg-secondary/30 rounded-t-xl sticky top-0 z-10 backdrop-blur-md items-center">
+                  <button onClick={() => toggleSort("username")} className="flex items-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary">
+                    User <SortIcon field="username" />
+                  </button>
+                  <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider">Email</div>
+                  <button onClick={() => toggleSort("createdAt")} className="flex items-center justify-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary">
+                    Joined <SortIcon field="createdAt" />
+                  </button>
+                  <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider text-center">Role</div>
+                  <button onClick={() => toggleSort("isBanned")} className="flex items-center justify-center text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider hover:text-chat-text-primary">
+                    Status <SortIcon field="isBanned" />
+                  </button>
+                  <div className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-wider text-center">Actions</div>
+                </div>
+                <div className="divide-y divide-chat-border/50 bg-chat-bg-secondary/10 border-x border-b border-chat-border rounded-b-xl">
+                  {users.map((user) => (
+                    <div key={user._id} className="grid grid-cols-[2fr_2fr_1fr_1fr_1.2fr_1.4fr] gap-4 px-4 py-4 items-center hover:bg-chat-bg-hover/20 transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Avatar src={user.avatar} name={user.name || user.username} />
+                        <div className="min-w-0">
+                          <p className="text-chat-text-primary text-sm font-semibold truncate flex items-center gap-1">
+                            {user.name || user.username}
+                            {user.isEmailVerified && <BadgeCheck size={13} className="text-chat-accent shrink-0" />}
+                          </p>
+                          <p className="text-chat-text-tertiary text-xs truncate">@{user.username}</p>
+                        </div>
+                      </div>
+                      <p className="text-chat-text-secondary text-[13px] truncate pr-2">{user.email}</p>
+                      <p className="text-chat-text-tertiary text-[12px] text-center">{formatDate(user.createdAt)}</p>
+                      <div className="flex justify-center">
+                        <Badge tone={user.role === "admin" ? "success" : "accent"}>
+                          {user.role === "admin"
+                            ? user.adminRole === "moderator"
+                              ? "Moderator"
+                              : "Super Admin"
+                            : "User"}
+                        </Badge>
+                      </div>
+                      <StatusBadges user={user} />
+                      <Actions user={user} />
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <div className="divide-y divide-chat-border/50 bg-chat-bg-secondary/10 border-x border-b border-chat-border rounded-b-xl">
+              {/* Mobile cards */}
+              <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-4">
                 {users.map((user) => (
-                  <div key={user._id} className="grid grid-cols-[2fr_2fr_1fr_1fr_1fr_120px] gap-4 px-4 py-4 items-center hover:bg-chat-bg-hover/20 transition-colors group">
-                    {/* User Profile */}
-                    <div className="flex items-center gap-3">
-                      <Avatar user={user} className="w-9 h-9" />
+                  <div key={user._id} className="bg-chat-bg-secondary border border-chat-border rounded-2xl p-5 flex flex-col gap-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Avatar src={user.avatar} name={user.name || user.username} className="w-11 h-11" />
+                        <div className="min-w-0">
+                          <p className="text-chat-text-primary font-bold truncate">{user.name || user.username}</p>
+                          <p className="text-chat-text-tertiary text-xs truncate">@{user.username}</p>
+                        </div>
+                      </div>
+                      <Badge tone={user.role === "admin" ? "success" : "accent"}>
+                        {user.role === "admin" ? (user.adminRole === "moderator" ? "Mod" : "Super") : "User"}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 py-3 border-y border-chat-border/50">
                       <div className="min-w-0">
-                        <p className="text-chat-text-primary text-sm font-semibold truncate">{user.name || user.username}</p>
-                        <p className="text-chat-text-tertiary text-xs">@{user.username}</p>
+                        <p className="text-[10px] font-bold text-chat-text-tertiary uppercase mb-0.5">Email</p>
+                        <p className="text-xs text-chat-text-secondary truncate">{user.email}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-chat-text-tertiary uppercase mb-0.5">Joined</p>
+                        <p className="text-xs text-chat-text-secondary">{formatDate(user.createdAt)}</p>
                       </div>
                     </div>
-
-                    {/* Email */}
-                    <p className="text-chat-text-secondary text-[13px] truncate pr-4">{user.email}</p>
-
-                    {/* Date */}
-                    <p className="text-chat-text-tertiary text-[12px] text-center">
-                      {new Date(user.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                    </p>
-
-                    {/* Role Badge */}
-                    <div className="flex justify-center">
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                        user.role === 'admin' 
-                          ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
-                          : 'bg-chat-accent/10 text-chat-accent border-chat-accent/20'
-                      }`}>
-                        {user.role}
-                      </span>
-                    </div>
-
-                    {/* Status Badge */}
-                    <div className="flex flex-col items-center gap-1">
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                        user.isBanned 
-                          ? 'bg-red-500/10 text-red-500 border-red-500/20' 
-                          : 'bg-chat-text-tertiary/10 text-chat-text-secondary border-chat-text-tertiary/20'
-                      }`}>
-                        {user.isBanned ? 'Banned' : 'Active'}
-                      </span>
-                      {user.timeoutUntil && new Date(user.timeoutUntil) > new Date() && (
-                        <span className="px-2 py-0.5 rounded-md text-[8px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                          Timed Out
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1 justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      {user.timeoutUntil && new Date(user.timeoutUntil) > new Date() && (
-                        <button
-                          onClick={() => clearTimeout(user._id)}
-                          disabled={actionLoading === user._id + '_timeout'}
-                          className="p-2 text-amber-500 hover:bg-amber-500/10 rounded-lg transition-all"
-                          title="Clear Timeout"
-                        >
-                          <XCircle size={16} />
-                        </button>
-                      )}
-                        <button
-                          onClick={() => setTimingOutUser(user)}
-                          className="p-2 text-amber-500 hover:bg-amber-500/10 rounded-lg transition-all"
-                          title="Timeout User"
-                        >
-                          <Clock size={16} />
-                        </button>
-                      <button
-                        onClick={() => toggleBan(user._id, user.isBanned)}
-                        disabled={actionLoading === user._id + '_ban'}
-                        className={`p-2 rounded-lg transition-all ${
-                          user.isBanned 
-                            ? 'text-emerald-500 hover:bg-emerald-500/10' 
-                            : 'text-red-500 hover:bg-red-500/10'
-                        }`}
-                        title={user.isBanned ? 'Unban User' : 'Ban User'}
-                      >
-                        <Ban size={16} />
-                      </button>
-                      <button
-                        onClick={() => toggleRole(user._id, user.role)}
-                        disabled={actionLoading === user._id + '_role'}
-                        className="p-2 text-purple-500 hover:bg-purple-500/10 rounded-lg transition-all"
-                        title={user.role === 'admin' ? 'Remove Admin' : 'Make Admin'}
-                      >
-                        <ShieldCheck size={16} />
-                      </button>
-                      <button
-                        onClick={() => setDeletingUser(user)}
-                        disabled={actionLoading?.includes('_delete')}
-                        className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
-                        title="Delete User"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                    <StatusBadges user={user} />
+                    <div className="flex justify-end">
+                      <Actions user={user} />
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-
-            {/* Mobile/Tablet Card View */}
-            <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-4">
-              {users.map((user) => (
-                <div key={user._id} className="bg-chat-bg-secondary border border-chat-border rounded-2xl p-5 flex flex-col gap-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar user={user} className="w-11 h-11" />
-                      <div>
-                        <p className="text-chat-text-primary font-bold">{user.name || user.username}</p>
-                        <p className="text-chat-text-tertiary text-xs">@{user.username}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-1.5">
-                      <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border ${
-                        user.role === 'admin' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-chat-accent/10 text-chat-accent border-chat-accent/20'
-                      }`}>
-                        {user.role}
-                      </span>
-                      {user.isBanned && (
-                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest bg-red-500/10 text-red-500 border border-red-500/20">
-                          Banned
-                        </span>
-                      )}
-                      {user.timeoutUntil && new Date(user.timeoutUntil) > new Date() && (
-                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                          Timed Out
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4 py-3 border-y border-chat-border/50">
-                    <div>
-                      <p className="text-[10px] font-bold text-chat-text-tertiary uppercase mb-0.5">Email</p>
-                      <p className="text-xs text-chat-text-secondary truncate">{user.email}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-bold text-chat-text-tertiary uppercase mb-0.5">Joined</p>
-                      <p className="text-xs text-chat-text-secondary">
-                        {new Date(user.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    {user.timeoutUntil && new Date(user.timeoutUntil) > new Date() && (
-                      <button
-                        onClick={() => clearTimeout(user._id)}
-                        disabled={actionLoading === user._id + '_timeout'}
-                        className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold bg-amber-500/5 text-amber-500 border border-amber-500/10 active:scale-95 transition-all"
-                      >
-                        <XCircle size={14} />
-                        Clear Timeout
-                      </button>
-                    )}
-                    <button
-                      onClick={() => setTimingOutUser(user)}
-                      className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold bg-amber-500/5 text-amber-500 border border-amber-500/10 active:scale-95 transition-all"
-                    >
-                      <Clock size={14} />
-                      Timeout
-                    </button>
-                    <button
-                      onClick={() => toggleBan(user._id, user.isBanned)}
-                      disabled={actionLoading === user._id + '_ban'}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition-all border ${
-                        user.isBanned 
-                          ? 'bg-emerald-500/5 text-emerald-500 border-emerald-500/10 active:scale-95' 
-                          : 'bg-red-500/5 text-red-500 border-red-500/10 active:scale-95'
-                      }`}
-                    >
-                      <Ban size={14} />
-                      {user.isBanned ? 'Unban User' : 'Ban User'}
-                    </button>
-                    <button
-                      onClick={() => toggleRole(user._id, user.role)}
-                      disabled={actionLoading === user._id + '_role'}
-                      className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold bg-purple-500/5 text-purple-500 border border-purple-500/10 transition-all active:scale-95"
-                    >
-                      <ShieldCheck size={14} />
-                      {user.role === 'admin' ? 'Demote' : 'Make Admin'}
-                    </button>
-                    <button
-                      onClick={() => setDeletingUser(user)}
-                      disabled={actionLoading?.includes('_delete')}
-                      className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold bg-red-500/5 text-red-500 border border-red-500/10 transition-all active:scale-95"
-                    >
-                      <Trash2 size={14} />
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Pagination Footer */}
-      <div className="shrink-0 px-4 sm:px-6 lg:px-8 py-4 bg-chat-bg-secondary/50 border-t border-chat-border flex flex-col sm:flex-row items-center justify-between gap-4">
-        <p className="text-chat-text-tertiary text-xs font-medium">
-          Showing <span className="text-chat-text-secondary">{Math.min(totalCount, (page - 1) * 20 + 1)}-{Math.min(totalCount, page * 20)}</span> of <span className="text-chat-text-secondary">{totalCount}</span> platform users
-        </p>
-        <div className="flex items-center gap-4">
-          <p className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-widest hidden sm:block">Page {page} of {totalPages}</p>
-          <div className="flex gap-1.5">
-            <button 
-              onClick={() => setPage(p => Math.max(1, p - 1))} 
-              disabled={page === 1}
-              className="p-2 bg-chat-bg-primary border border-chat-border rounded-lg text-chat-text-secondary disabled:opacity-30 disabled:cursor-not-not-allowed hover:text-chat-text-primary transition-all"
-            >
-              <ChevronLeft size={18} />
-            </button>
-            <button 
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))} 
-              disabled={page === totalPages}
-              className="p-2 bg-chat-bg-primary border border-chat-border rounded-lg text-chat-text-secondary disabled:opacity-30 disabled:cursor-not-not-allowed hover:text-chat-text-primary transition-all"
-            >
-              <ChevronRight size={18} />
-            </button>
-          </div>
+            </>
+          )}
         </div>
+
+        {pagination && (
+          <Pagination
+            page={pagination.page}
+            pages={pagination.pages}
+            total={pagination.total}
+            limit={pagination.limit}
+            onPage={setPage}
+            noun="users"
+          />
+        )}
       </div>
 
-      {/* Timeout Mini-Modal */}
-      <AnimatePresence>
-        {timingOutUser && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setTimingOutUser(null)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            />
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="relative w-full max-w-sm bg-chat-bg-secondary border border-chat-border rounded-2xl p-6 shadow-2xl"
-            >
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500">
-                  <Clock size={20} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-chat-text-primary">Timeout @{timingOutUser?.username}</h3>
-                  <p className="text-[10px] text-chat-text-tertiary">User will be unable to login until expiry</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { label: '1 Hour', val: 1 },
-                    { label: '24 Hours', val: 24 },
-                    { label: '3 Days', val: 72 },
-                    { label: '1 Week', val: 168 }
-                  ].map(q => (
-                    <button
-                      key={q.label}
-                      onClick={() => {
-                        if (!timingOutUser) return;
-                        const d = new Date();
-                        d.setHours(d.getHours() + q.val);
-                        applyTimeout(timingOutUser._id, d.toISOString());
-                      }}
-                      className="py-2 bg-chat-bg-primary border border-chat-border rounded-lg text-xs font-bold text-chat-text-secondary hover:border-amber-500/50 hover:text-amber-500 transition-all"
-                    >
-                      {q.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="relative">
-                   <div className="text-[10px] font-bold text-chat-text-tertiary uppercase tracking-widest mb-1.5 ml-1">Custom Expiry</div>
-                   <input 
-                     type="datetime-local"
-                     className="w-full bg-chat-bg-primary border border-chat-border rounded-lg px-3 py-2 text-xs text-chat-text-primary focus:outline-none focus:border-amber-500/50"
-                     value={customTimeout}
-                     onChange={(e) => setCustomTimeout(e.target.value)}
-                   />
-                </div>
-
-                <div className="flex gap-2 pt-2">
-                  <button 
-                    onClick={() => setTimingOutUser(null)}
-                    className="flex-1 py-2 rounded-lg text-xs font-bold text-chat-text-tertiary hover:bg-chat-bg-hover transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    disabled={!customTimeout || actionLoading?.includes('timeout')}
-                    onClick={() => timingOutUser && applyTimeout(timingOutUser._id, customTimeout)}
-                    className="flex-1 py-2 bg-amber-500 text-white rounded-lg text-xs font-bold hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/10"
-                  >
-                    Set Timeout
-                  </button>
-                </div>
-              </div>
-            </motion.div>
+      {/* Timeout modal */}
+      <Modal
+        open={!!timeoutUser}
+        onClose={() => { setTimeoutUser(null); setCustomTimeout(""); }}
+        title={`Timeout @${timeoutUser?.username ?? ""}`}
+        subtitle="User cannot sign in until the timeout expires"
+        icon={Clock}
+        iconTone="warning"
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { label: "1 Hour", h: 1 },
+              { label: "24 Hours", h: 24 },
+              { label: "3 Days", h: 72 },
+              { label: "1 Week", h: 168 },
+            ].map((q) => (
+              <button
+                key={q.label}
+                onClick={() => {
+                  if (!timeoutUser) return;
+                  const d = new Date();
+                  d.setHours(d.getHours() + q.h);
+                  moderate(timeoutUser, { action: "timeout", timeoutUntil: d.toISOString() }, "Timeout applied");
+                  setTimeoutUser(null);
+                }}
+                className="py-2 bg-chat-bg-primary border border-chat-border rounded-lg text-xs font-bold text-chat-text-secondary hover:border-amber-500/50 hover:text-amber-500 transition-all"
+              >
+                {q.label}
+              </button>
+            ))}
           </div>
-        )}
-        {/* Delete Confirmation Modal */}
-        {deletingUser && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setDeletingUser(null)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          <div>
+            <div className="text-[10px] font-bold text-chat-text-tertiary uppercase tracking-widest mb-1.5 ml-1">Custom expiry</div>
+            <input
+              type="datetime-local"
+              value={customTimeout}
+              onChange={(e) => setCustomTimeout(e.target.value)}
+              className="w-full bg-chat-bg-primary border border-chat-border rounded-lg px-3 py-2 text-xs text-chat-text-primary focus:outline-none focus:border-amber-500/50"
             />
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="relative w-full max-w-sm bg-chat-bg-secondary border border-chat-border rounded-3xl p-6 shadow-2xl overflow-hidden"
-            >
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500 border border-red-500/20">
-                  <Trash2 size={24} />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-chat-text-primary">Delete @{deletingUser?.username}?</h3>
-                  <p className="text-[10px] text-red-500 font-black uppercase tracking-widest">Permanent Destruction</p>
-                </div>
-              </div>
-
-              <div className="p-4 bg-chat-bg-primary rounded-2xl border border-chat-border mb-6">
-                <p className="text-xs text-chat-text-secondary leading-relaxed">
-                  You are about to permanently erase <span className="text-chat-text-primary font-bold">@{deletingUser?.username}</span>. This will wipe all messages, media, and platform activity.
-                </p>
-                <div className="mt-3 flex items-center gap-2 text-[10px] font-bold text-red-500">
-                  <AlertTriangle size={12} />
-                  THIS ACTION CANNOT BE UNDONE
-                </div>
-              </div>
-
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setDeletingUser(null)}
-                  className="flex-1 py-3 rounded-xl text-xs font-bold text-chat-text-tertiary hover:bg-chat-bg-hover transition-all"
-                >
-                  Cancel
-                </button>
-                <button 
-                  disabled={actionLoading?.includes('_delete')}
-                  onClick={() => deletingUser && deleteUser(deletingUser._id)}
-                  className="flex-1 py-3 bg-red-500 text-white rounded-xl text-xs font-bold hover:bg-red-600 transition-all shadow-lg shadow-red-500/20 flex items-center justify-center gap-2"
-                >
-                  {actionLoading?.includes('_delete') ? (
-                    <RefreshCw size={14} className="animate-spin" />
-                  ) : (
-                    <>
-                      <Trash2 size={14} />
-                      Hard Delete
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Decorative element to match reports page style */}
-              <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-red-500/5 blur-[40px] rounded-full pointer-events-none" />
-            </motion.div>
           </div>
-        )}
-      </AnimatePresence>
-      </div>
+          <Button
+            variant="primary"
+            className="w-full"
+            disabled={!customTimeout}
+            onClick={() => {
+              if (!timeoutUser || !customTimeout) return;
+              moderate(timeoutUser, { action: "timeout", timeoutUntil: new Date(customTimeout).toISOString() }, "Timeout applied");
+              setTimeoutUser(null);
+              setCustomTimeout("");
+            }}
+          >
+            Set timeout
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Deactivate confirm */}
+      <ConfirmDialog
+        open={!!deactivateUser}
+        onClose={() => { setDeactivateUser(null); setReason(""); }}
+        onConfirm={() => {
+          if (!deactivateUser) return;
+          moderate(deactivateUser, { action: "deactivate", reason }, "User deactivated");
+          setDeactivateUser(null);
+          setReason("");
+        }}
+        title={`Deactivate @${deactivateUser?.username ?? ""}?`}
+        message="The account will be reversibly disabled and unable to sign in. You can reactivate it at any time."
+        confirmLabel="Deactivate"
+        loading={busy === deactivateUser?._id}
+        requireReason
+        reason={reason}
+        onReasonChange={setReason}
+      />
+
+      {/* Delete confirm (super admin) */}
+      <ConfirmDialog
+        open={!!deleteUser}
+        onClose={() => { setDeleteUser(null); setReason(""); }}
+        onConfirm={() => {
+          if (!deleteUser) return;
+          moderate(deleteUser, { action: "delete", reason }, "User permanently deleted");
+          setDeleteUser(null);
+          setReason("");
+        }}
+        title={`Permanently delete @${deleteUser?.username ?? ""}?`}
+        message="This erases the account and all of its messages, stories, and reports. This cannot be undone — prefer Deactivate unless removal is required."
+        confirmLabel="Hard delete"
+        danger
+        loading={busy === deleteUser?._id}
+        requireReason
+        reason={reason}
+        onReasonChange={setReason}
+      />
     </div>
   );
 }
-

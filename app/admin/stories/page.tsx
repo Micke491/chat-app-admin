@@ -1,343 +1,222 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useCallback } from 'react';
-import { BookImage, Eye, Clock, RefreshCw, ChevronLeft, ChevronRight, X, User, Volume2, VolumeX } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { getAuthToken } from "@/lib/storage";
+import { useMemo, useState } from "react";
+import { BookImage, Trash2, RotateCcw, Eye, Clock, X, Play } from "lucide-react";
+import { motion } from "framer-motion";
+import { apiFetch } from "@/lib/client/api";
+import { useList } from "@/lib/client/useList";
+import { useToast } from "@/components/admin/Toast";
+import { useAdmin } from "@/components/admin/AdminProvider";
+import { ConfirmDialog } from "@/components/admin/Modal";
+import {
+  PageHeader,
+  FilterSelect,
+  Button,
+  IconButton,
+  Badge,
+  Avatar,
+  Spinner,
+  EmptyState,
+  ErrorState,
+  Pagination,
+} from "@/components/admin/ui";
+import { timeAgo, formatDateTime } from "@/lib/format";
 
 interface StoryRow {
   _id: string;
   mediaUrl: string;
-  mediaType: 'image' | 'video';
+  mediaType: "image" | "video";
   caption?: string;
+  viewedBy?: { userId: string }[];
   expiresAt: string;
   createdAt: string;
-  viewedBy: { 
-    userId: { _id: string; username: string; avatar?: string }; 
-    viewedAt: string;
-  }[];
-  userId?: { username: string; email: string; avatar?: string };
+  removedByAdmin?: boolean;
+  userId?: { _id: string; username: string; name?: string; avatar?: string } | null;
 }
 
-export default function AdminStoriesPage() {
-  const [stories, setStories] = useState<StoryRow[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function StoriesPage() {
+  const { can } = useAdmin();
+  const toast = useToast();
+
+  const [filter, setFilter] = useState("");
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [stats, setStats] = useState({ total: 0, active: 0 });
-  const [selected, setSelected] = useState<StoryRow | null>(null);
-  const [isMuted, setIsMuted] = useState(true);
-  const [showViewers, setShowViewers] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<StoryRow | null>(null);
+  const [reason, setReason] = useState("");
+  const [lightbox, setLightbox] = useState<StoryRow | null>(null);
 
-  function getToken() {
-    return document.cookie.match(/(?:^|; )token=([^;]+)/)?.[1] || getAuthToken() || '';
-  }
+  const path = useMemo(() => {
+    const p = new URLSearchParams({ page: String(page), limit: "24" });
+    if (filter) p.set("filter", filter);
+    return `/api/admin/stories?${p.toString()}`;
+  }, [page, filter]);
 
-  const fetchStories = useCallback(async () => {
-    setLoading(true);
+  const { items: stories, pagination, loading, error, reload } = useList<StoryRow>(path);
+
+  async function moderate(story: StoryRow, action: "remove" | "restore", note?: string) {
+    setBusy(story._id);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: '24' });
-      const res = await fetch(`/api/admin/stories?${params}`, { headers: { Authorization: `Bearer ${getToken()}` } });
-      const data = await res.json();
-      setStories(data.stories || []);
-      setTotalPages(data.pagination?.pages || 1);
-      setStats(data.stats || { total: 0, active: 0 });
-    } catch { } finally {
-      setLoading(false);
+      await apiFetch(`/api/admin/stories/${story._id}/moderation`, {
+        method: "POST",
+        body: JSON.stringify({ action, reason: note }),
+      });
+      toast.success(action === "remove" ? "Story removed" : "Story restored");
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusy(null);
     }
-  }, [page]);
-
-  useEffect(() => { fetchStories(); }, [fetchStories]);
-
-  function isActive(story: StoryRow) {
-    return new Date(story.expiresAt) > new Date();
   }
+
+  const isExpired = (s: StoryRow) => new Date(s.expiresAt) <= new Date();
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-chat-bg-primary relative">
-      {/* Background Ambient Glow */}
       <div className="ambient-glow">
-        <div className="ambient-glow-inner"></div>
+        <div className="ambient-glow-inner" />
       </div>
 
       <div className="relative z-10 flex flex-col h-full">
-      {/* Header */}
-      <div className="p-4 sm:p-6 lg:p-8 pb-4 shrink-0">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <h1 className="text-chat-text-primary text-2xl font-bold tracking-tight">Stories</h1>
-            <div className="flex items-center gap-4 mt-1.5">
-              <div className="flex items-center gap-1.5 text-chat-text-tertiary text-xs font-medium uppercase tracking-wider">
-                <BookImage size={12} className="text-chat-text-tertiary" />
-                <span>{stats.total} total</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-emerald-500/80 text-xs font-medium uppercase tracking-wider">
-                <Clock size={12} className="text-emerald-500" />
-                <span>{stats.active} active</span>
-              </div>
-            </div>
-          </div>
-          <button 
-            onClick={fetchStories}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-chat-bg-secondary border border-chat-border rounded-lg text-chat-text-secondary text-sm hover:text-chat-text-primary hover:bg-chat-bg-hover transition-all"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+        <div className="p-4 sm:p-6 lg:p-8 pb-4 shrink-0 space-y-6">
+          <PageHeader
+            title="Stories"
+            subtitle="Review and moderate ephemeral story media"
+            actions={<Button icon={BookImage} onClick={reload} loading={loading}>Refresh</Button>}
+          />
+          <FilterSelect
+            value={filter}
+            onChange={(v) => { setFilter(v); setPage(1); }}
+            options={[
+              { label: "All Stories", value: "" },
+              { label: "Active", value: "active" },
+              { label: "Removed", value: "removed" },
+            ]}
+          />
         </div>
-      </div>
 
-      {/* Grid */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 custom-scrollbar pb-8">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center pt-20 gap-4">
-            <div className="w-10 h-10 rounded-full border-2 border-chat-border border-t-pink-500 animate-spin" />
-            <p className="text-sm text-chat-text-tertiary font-medium">Loading story board...</p>
-          </div>
-        ) : stories.length === 0 ? (
-          <div className="flex flex-col items-center justify-center pt-20 text-center">
-            <div className="w-16 h-16 rounded-full bg-chat-bg-secondary flex items-center justify-center mb-4 border border-chat-border">
-              <BookImage size={32} className="text-chat-text-tertiary" />
-            </div>
-            <h3 className="text-chat-text-primary font-semibold">No stories yet</h3>
-            <p className="text-chat-text-tertiary text-sm mt-1 max-w-[240px]">Users haven't shared any moments yet.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-            {stories.map((story) => (
-              <motion.div
-                layoutId={`story-${story._id}`}
-                key={story._id}
-                onClick={() => setSelected(story)}
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                whileHover={{ scale: 1.02 }}
-                className={`relative aspect-[9/16] rounded-2xl overflow-hidden cursor-pointer border-2 transition-all ${
-                  isActive(story) 
-                    ? 'border-pink-500/40 shadow-[0_0_15px_rgba(236,72,153,0.1)]' 
-                    : 'border-chat-border group-hover:border-chat-text-tertiary/30'
-                } group`}
-              >
-                {story.mediaType === 'image' ? (
-                  <img src={story.mediaUrl} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <video src={story.mediaUrl} className="w-full h-full object-cover" muted />
-                )}
-
-                {/* Overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-80 group-hover:opacity-100 transition-opacity" />
-
-                {/* Info Overlay */}
-                <div className="absolute bottom-0 left-0 right-0 p-3 flex flex-col gap-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-5 h-5 rounded-full bg-chat-bg-secondary border border-white/20 overflow-hidden shrink-0">
-                      {story.userId?.avatar ? <img src={story.userId.avatar} className="w-full h-full object-cover" /> : <User size={10} className="m-auto mt-1 text-chat-text-tertiary" />}
-                    </div>
-                    <p className="text-[11px] font-bold text-white truncate drop-shadow-md">@{story.userId?.username || 'Unknown'}</p>
-                  </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1 text-[10px] text-white/70 font-medium">
-                        <Eye size={10} />
-                        <span>{Array.from(new Set(story.viewedBy.map(v => typeof v.userId === 'string' ? v.userId : v.userId?._id))).length}</span>
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 custom-scrollbar pb-8">
+          {loading ? (
+            <Spinner label="Loading stories…" />
+          ) : error ? (
+            <ErrorState message={error} onRetry={reload} />
+          ) : stories.length === 0 ? (
+            <EmptyState icon={BookImage} title="No stories found" description="No stories match this filter. Expired stories are removed automatically." />
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {stories.map((story) => (
+                <div key={story._id} className="bg-chat-bg-secondary border border-chat-border rounded-2xl overflow-hidden flex flex-col group">
+                  <button onClick={() => setLightbox(story)} className="relative aspect-[3/4] bg-chat-bg-primary overflow-hidden">
+                    {story.mediaType === "video" ? (
+                      <>
+                        <video src={story.mediaUrl} className="w-full h-full object-cover" muted playsInline preload="metadata" />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                          <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center">
+                            <Play size={16} className="text-white ml-0.5" />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={story.mediaUrl} alt={story.caption || "story"} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                    )}
+                    {story.removedByAdmin && (
+                      <div className="absolute inset-0 bg-red-950/60 flex items-center justify-center">
+                        <Badge tone="danger">Removed</Badge>
                       </div>
-                      <div className={`flex items-center gap-1 text-[9px] font-black uppercase tracking-widest ${isActive(story) ? 'text-pink-400' : 'text-white/40'}`}>
-                      {isActive(story) ? 'Active' : 'Expired'}
+                    )}
+                    <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/50 text-white text-[10px] font-medium">
+                      <Eye size={10} /> {story.viewedBy?.length ?? 0}
+                    </div>
+                  </button>
+
+                  <div className="p-3 flex flex-col gap-2 flex-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Avatar src={story.userId?.avatar} name={story.userId?.username || "?"} className="w-6 h-6" />
+                      <span className="text-xs font-medium text-chat-text-primary truncate">
+                        @{story.userId?.username || "unknown"}
+                      </span>
+                    </div>
+                    {story.caption && (
+                      <p className="text-[11px] text-chat-text-secondary line-clamp-2">{story.caption}</p>
+                    )}
+                    <div className="flex items-center justify-between mt-auto pt-1">
+                      <span className="flex items-center gap-1 text-[10px] text-chat-text-tertiary">
+                        <Clock size={10} />
+                        {isExpired(story) ? "expired" : timeAgo(story.createdAt)}
+                      </span>
+                      {can("stories.moderate") &&
+                        (story.removedByAdmin ? (
+                          <IconButton icon={RotateCcw} tone="success" title="Restore" disabled={busy === story._id} onClick={() => moderate(story, "restore")} />
+                        ) : (
+                          <IconButton icon={Trash2} tone="danger" title="Remove" disabled={busy === story._id} onClick={() => { setRemoveTarget(story); setReason(""); }} />
+                        ))}
                     </div>
                   </div>
                 </div>
-
-                {/* Active Pulse indicator */}
-                {isActive(story) && (
-                  <div className="absolute top-3 right-3">
-                    <div className="w-2 h-2 bg-pink-500 rounded-full animate-pulse shadow-[0_0_8px_#ec4899]" />
-                  </div>
-                )}
-              </motion.div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Pagination Footer */}
-      <div className="shrink-0 px-4 sm:px-6 lg:px-8 py-4 bg-chat-bg-secondary/50 border-t border-chat-border flex items-center justify-between">
-        <p className="text-chat-text-tertiary text-[11px] font-bold uppercase tracking-widest">
-          {stats.total} total <span className="hidden sm:inline">moments</span>
-        </p>
-        <div className="flex items-center gap-3">
-          <p className="text-[11px] font-bold text-chat-text-tertiary uppercase tracking-widest hidden xs:block">Page {page} of {totalPages}</p>
-          <div className="flex gap-1">
-            <button 
-              onClick={() => setPage(p => Math.max(1, p - 1))} 
-              disabled={page === 1}
-              className="p-1.5 bg-chat-bg-primary border border-chat-border rounded-lg text-chat-text-secondary disabled:opacity-30 hover:text-chat-text-primary transition-all"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button 
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))} 
-              disabled={page === totalPages}
-              className="p-1.5 bg-chat-bg-primary border border-chat-border rounded-lg text-chat-text-secondary disabled:opacity-30 hover:text-chat-text-primary transition-all"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
+              ))}
+            </div>
+          )}
         </div>
-      </div>
 
-      {/* Lightbox Modal */}
-      <AnimatePresence>
-        {selected && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelected(null)}
-              className="absolute inset-0 bg-black/95 backdrop-blur-md"
-            />
-            
-            <motion.div
-              layoutId={`story-${selected._id}`}
-              className="relative w-full max-w-[400px] bg-chat-bg-secondary border border-chat-border rounded-[32px] overflow-hidden shadow-2xl flex flex-col aspect-[9/16]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="absolute inset-0">
-                {selected.mediaType === 'image' ? (
-                  <img src={selected.mediaUrl} className="w-full h-full object-contain bg-black" />
-                ) : (
-                  <video 
-                    src={selected.mediaUrl} 
-                    className="w-full h-full object-contain bg-black" 
-                    autoPlay 
-                    loop
-                    muted={isMuted}
-                    playsInline
-                  />
-                )}
-              </div>
-
-              {/* Progress Bar (Visual only for Admin) */}
-              <div className="absolute top-2 left-0 right-0 z-10 px-4 flex gap-1">
-                <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
-                  <div className="h-full bg-white w-full opacity-50" />
-                </div>
-              </div>
-
-              {/* Top Controls */}
-              <div className="absolute top-0 inset-x-0 p-6 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between z-20">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full border-2 border-pink-500 p-0.5">
-                    {selected.userId?.avatar ? <img src={selected.userId.avatar} className="w-full h-full rounded-full object-cover" /> : <div className="w-full h-full bg-chat-bg-secondary rounded-full flex items-center justify-center"><User size={16} className="text-chat-text-tertiary" /></div>}
-                  </div>
-                  <div>
-                    <p className="text-white font-bold text-sm">@{selected.userId?.username}</p>
-                    <p className="text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                      {new Date(selected.createdAt).toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {selected.mediaType === 'video' && (
-                    <button 
-                      onClick={() => setIsMuted(!isMuted)}
-                      className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white backdrop-blur-md transition-all"
-                    >
-                      {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-                    </button>
-                  )}
-                  <button 
-                    onClick={() => {
-                      setSelected(null);
-                      setShowViewers(false);
-                    }}
-                    className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white backdrop-blur-md transition-all"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
-
-              {/* Viewers List Overlay */}
-              <AnimatePresence>
-                {showViewers && (
-                  <motion.div
-                    initial={{ y: '100%' }}
-                    animate={{ y: 0 }}
-                    exit={{ y: '100%' }}
-                    transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                    className="absolute inset-0 z-30 bg-chat-bg-primary/95 backdrop-blur-xl flex flex-col"
-                  >
-                    <div className="p-6 border-b border-chat-border flex items-center justify-between">
-                      <h3 className="text-chat-text-primary font-bold">Viewers ({Array.from(new Map(selected.viewedBy.filter(v => v.userId).map(v => [v.userId._id, v])).values()).length})</h3>
-                      <button 
-                        onClick={() => setShowViewers(false)}
-                        className="p-1 hover:bg-chat-bg-secondary rounded-lg transition-all"
-                      >
-                        <X size={20} className="text-chat-text-secondary" />
-                      </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                      {selected.viewedBy.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-chat-text-tertiary">
-                          <Eye size={32} className="mb-2 opacity-20" />
-                          <p className="text-sm font-medium">No views yet</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-4">
-                          {Array.from(new Map(selected.viewedBy.filter(v => v.userId).map(v => [v.userId._id, v])).values()).map((view, i) => (
-                            <div key={i} className="flex items-center justify-between group">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-full bg-chat-bg-secondary border border-chat-border overflow-hidden">
-                                  {view.userId?.avatar ? (
-                                    <img src={view.userId.avatar} className="w-full h-full object-cover" />
-                                  ) : (
-                                    <div className="w-full h-full flex items-center justify-center text-chat-text-tertiary">
-                                      <User size={16} />
-                                    </div>
-                                  )}
-                                </div>
-                                <div>
-                                  <p className="text-sm font-bold text-chat-text-primary">@{view.userId?.username || 'Unknown'}</p>
-                                  <p className="text-[10px] text-chat-text-tertiary">
-                                    {new Date(view.viewedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {/* Bottom Info */}
-              <div className="absolute bottom-0 inset-x-0 p-8 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex flex-col gap-4 z-20">
-                {selected.caption && (
-                  <p className="text-white text-[15px] leading-relaxed drop-shadow-md">{selected.caption}</p>
-                )}
-                <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                  <button 
-                    onClick={() => setShowViewers(true)}
-                    className="flex items-center gap-4 group"
-                  >
-                    <div className="flex items-center gap-2 text-white/80 group-hover:text-white transition-colors">
-                      <Eye size={16} />
-                      <span className="text-sm font-bold">{Array.from(new Set(selected.viewedBy.filter(v => v.userId).map(v => v.userId._id))).length} views</span>
-                    </div>
-                  </button>
-                  <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[0.15em] border ${isActive(selected) ? 'bg-pink-500/20 text-pink-400 border-pink-500/30' : 'bg-white/10 text-white/40 border-white/10'}`}>
-                    {isActive(selected) ? `Expires in ${Math.round((new Date(selected.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60))}h` : 'Expired'}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </div>
+        {pagination && (
+          <Pagination page={pagination.page} pages={pagination.pages} total={pagination.total} limit={pagination.limit} onPage={setPage} noun="stories" />
         )}
-      </AnimatePresence>
       </div>
+
+      {/* Lightbox */}
+      {lightbox && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-black/85 backdrop-blur-sm" />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-md bg-chat-bg-secondary border border-chat-border rounded-2xl overflow-hidden max-h-[90vh] flex flex-col"
+          >
+            <div className="flex items-center justify-between p-4 border-b border-chat-border">
+              <div className="flex items-center gap-2">
+                <Avatar src={lightbox.userId?.avatar} name={lightbox.userId?.username || "?"} className="w-8 h-8" />
+                <div>
+                  <p className="text-sm font-semibold text-chat-text-primary">@{lightbox.userId?.username}</p>
+                  <p className="text-[10px] text-chat-text-tertiary">{formatDateTime(lightbox.createdAt)}</p>
+                </div>
+              </div>
+              <button onClick={() => setLightbox(null)} className="p-2 text-chat-text-tertiary hover:text-chat-text-primary rounded-lg">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="bg-black flex items-center justify-center max-h-[65vh] overflow-hidden">
+              {lightbox.mediaType === "video" ? (
+                <video src={lightbox.mediaUrl} controls autoPlay className="max-h-[65vh] w-auto" />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={lightbox.mediaUrl} alt={lightbox.caption || "story"} className="max-h-[65vh] w-auto object-contain" />
+              )}
+            </div>
+            {lightbox.caption && (
+              <p className="p-4 text-sm text-chat-text-secondary">{lightbox.caption}</p>
+            )}
+          </motion.div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        onConfirm={() => {
+          if (removeTarget) moderate(removeTarget, "remove", reason);
+          setRemoveTarget(null);
+        }}
+        title="Remove this story?"
+        message="It will be hidden from all users immediately."
+        confirmLabel="Remove story"
+        danger
+        loading={busy === removeTarget?._id}
+        requireReason
+        reason={reason}
+        onReasonChange={setReason}
+      />
     </div>
   );
 }
-

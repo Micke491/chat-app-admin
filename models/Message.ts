@@ -34,7 +34,13 @@
     
     isForwarded: boolean;
     isSystemMessage: boolean;
-    
+
+    // Admin moderation (soft-delete)
+    removedByAdmin: boolean;
+    removedBy?: mongoose.Types.ObjectId;
+    removedAt?: Date;
+    removeReason?: string;
+
     createdAt: Date;
     updatedAt: Date;
     
@@ -149,7 +155,23 @@
         type: Boolean,
         default: false,
       },
-      
+
+      removedByAdmin: {
+        type: Boolean,
+        default: false,
+      },
+      removedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      removedAt: {
+        type: Date,
+      },
+      removeReason: {
+        type: String,
+        maxlength: 500,
+      },
+
       replyTo: {
         type: Schema.Types.ObjectId,
         ref: 'Message',

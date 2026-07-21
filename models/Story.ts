@@ -10,6 +10,11 @@ export interface IStory extends Document {
     viewedAt: Date;
   }[];
   expiresAt: Date;
+  // Admin moderation (soft-delete)
+  removedByAdmin: boolean;
+  removedBy?: mongoose.Types.ObjectId;
+  removedAt?: Date;
+  removeReason?: string;
   createdAt: Date;
 }
 
@@ -52,6 +57,21 @@ const StorySchema = new Schema<IStory>(
     expiresAt: {
       type: Date,
       required: true,
+    },
+    removedByAdmin: {
+      type: Boolean,
+      default: false,
+    },
+    removedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    removedAt: {
+      type: Date,
+    },
+    removeReason: {
+      type: String,
+      maxlength: 500,
     },
   },
   {

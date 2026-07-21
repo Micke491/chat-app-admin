@@ -1,61 +1,44 @@
-import { NextResponse } from 'next/server';
-import { connectDB } from '@/lib/db';
-import User from '@/models/User';
-import { verifyToken } from '@/lib/auth';
+import { withAdmin } from "@/lib/withAdmin";
+import { okPaginated, parsePagination, buildPagination, escapeRegex } from "@/lib/api";
+import User from "@/models/User";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
-    try {
-        await connectDB();
-        const auth = await verifyToken(request);
-        if (!auth || auth.role !== 'admin') {
-            return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
-        }
+const ALLOWED_SORT = ["username", "createdAt", "lastSeen", "isBanned"];
 
-        console.log(`[AUDIT] Admin ${auth.id} (${auth.email}) accessed user list at ${new Date().toISOString()}`);
+export const GET = withAdmin("users.view", async (req) => {
+  const url = new URL(req.url);
+  const { page, limit, skip } = parsePagination(url, { defaultLimit: 20 });
+  const search = url.searchParams.get("search")?.trim() || "";
+  const role = url.searchParams.get("role") || "";
+  const status = url.searchParams.get("status") || ""; // banned|deactivated|timedout|active
+  const sortByRaw = url.searchParams.get("sortBy") || "createdAt";
+  const sortBy = ALLOWED_SORT.includes(sortByRaw) ? sortByRaw : "createdAt";
+  const sortOrder = url.searchParams.get("sortOrder") === "asc" ? 1 : -1;
 
-        const url = new URL(request.url);
-        const search = url.searchParams.get('search') || '';
-        const role = url.searchParams.get('role');
-        const page = parseInt(url.searchParams.get('page') || '1');
-        const limit = parseInt(url.searchParams.get('limit') || '20');
-        const sortBy = url.searchParams.get('sortBy') || 'createdAt';
-        const sortOrder = url.searchParams.get('sortOrder') === 'asc' ? 1 : -1;
+  const query: Record<string, unknown> = {};
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    query.$or = [{ username: rx }, { email: rx }, { name: rx }];
+  }
+  if (role === "user" || role === "admin") query.role = role;
+  if (status === "banned") query.isBanned = true;
+  else if (status === "deactivated") query.isDeactivated = true;
+  else if (status === "timedout") query.timeoutUntil = { $gt: new Date() };
+  else if (status === "active") {
+    query.isBanned = false;
+    query.isDeactivated = false;
+  }
 
-        const allowedSortFields = ['username', 'createdAt', 'isBanned'];
-        const resolvedSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
+  const [users, total] = await Promise.all([
+    User.find(query)
+      .select("-password -twoFactorSecret -resetPasswordToken -resetPasswordExpires")
+      .sort({ [sortBy]: sortOrder })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(query),
+  ]);
 
-        const query: any = {};
-        if (search) {
-            query.$or = [
-                { username: { $regex: search, $options: 'i' } },
-                { email: { $regex: search, $options: 'i' } },
-            ];
-        }
-        if (role) {
-            query.role = role;
-        }
-
-        const total = await User.countDocuments(query);
-        const users = await User.find(query)
-            .select('-password -twoFactorSecret -resetPasswordToken')
-            .sort({ [resolvedSortBy]: sortOrder })
-            .skip((page - 1) * limit)
-            .limit(limit)
-            .lean();
-
-        const totalUsers = await User.countDocuments();
-        const bannedUsers = await User.countDocuments({ isBanned: true });
-        const adminUsers = await User.countDocuments({ role: 'admin' });
-
-        return NextResponse.json({
-            users,
-            stats: { total: totalUsers, banned: bannedUsers, admins: adminUsers },
-            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-        }, { status: 200 });
-    } catch (error) {
-        console.error('Error fetching users:', error);
-        return NextResponse.json({ message: 'Failed to fetch users' }, { status: 500 });
-    }
-}
+  return okPaginated(users, buildPagination(page, limit, total));
+});
